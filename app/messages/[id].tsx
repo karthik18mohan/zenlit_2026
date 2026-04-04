@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   FlatList,
   Keyboard,
@@ -19,6 +20,7 @@ import Composer from '../../src/components/messaging/Composer';
 import DayDivider from '../../src/components/messaging/DayDivider';
 import MessageBubble, { type MessageStatus } from '../../src/components/messaging/MessageBubble';
 import TypingIndicator from '../../src/components/messaging/TypingIndicator';
+import ReportSheet from '../../src/components/ReportSheet';
 import { theme } from '../../src/styles/theme';
 import {
   getMessagesBetweenUsers,
@@ -28,6 +30,7 @@ import {
   type Profile,
   type SocialLinks,
   isUserNearby,
+  blockUser,
 } from '../../src/services';
 import { supabase } from '../../src/lib/supabase';
 import { useMessaging } from '../../src/contexts/MessagingContext';
@@ -164,6 +167,7 @@ const ChatDetailScreen: React.FC = () => {
   const [isTyping, setIsTyping] = useState(false);
   const [composerHeight, setComposerHeight] = useState(72);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [reportSheetVisible, setReportSheetVisible] = useState(false);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [state, dispatch] = useReducer(messagesReducer, {
@@ -701,6 +705,28 @@ const ChatDetailScreen: React.FC = () => {
           profileId={otherUser.id}
           isOnline={isOnline}
           isTyping={isTyping}
+          onReport={() => setReportSheetVisible(true)}
+          onBlock={() => {
+            Alert.alert(
+              'Block User',
+              `Block ${displayName}? They won't be able to message you and will be hidden from your feed and radar.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Block',
+                  style: 'destructive',
+                  onPress: async () => {
+                    const result = await blockUser(otherUser.id);
+                    if (result.success) {
+                      Alert.alert('Blocked', `${displayName} has been blocked.`);
+                    } else {
+                      Alert.alert('Error', result.error || 'Failed to block user.');
+                    }
+                  },
+                },
+              ],
+            );
+          }}
         />
       </SafeAreaView>
 
@@ -783,6 +809,15 @@ const ChatDetailScreen: React.FC = () => {
           </SafeAreaView>
         </View>
       </KeyboardAvoidingView>
+
+      {otherUser && (
+        <ReportSheet
+          visible={reportSheetVisible}
+          onClose={() => setReportSheetVisible(false)}
+          reportedUserId={otherUser.id}
+          contentType="message"
+        />
+      )}
     </View>
   );
 };

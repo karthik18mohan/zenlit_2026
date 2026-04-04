@@ -54,16 +54,19 @@ Deno.serve(async (req: Request) => {
     const authHeader = req.headers.get("authorization") || "";
     const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
     const functionSecret = Deno.env.get("FUNCTION_SECRET");
-    if (!functionSecret) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Server misconfigured: FUNCTION_SECRET is not set" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
 
-    if (!bearerToken || bearerToken !== functionSecret) {
+    // Auth: if FUNCTION_SECRET is configured, require exact match.
+    // Otherwise, rely on Supabase infrastructure JWT verification (verify_jwt: true).
+    if (functionSecret) {
+      if (!bearerToken || bearerToken !== functionSecret) {
+        return new Response(
+          JSON.stringify({ success: false, error: "Unauthorized" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    } else if (!bearerToken) {
       return new Response(
-        JSON.stringify({ success: false, error: "Unauthorized" }),
+        JSON.stringify({ success: false, error: "Unauthorized: no token provided" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }

@@ -51,6 +51,9 @@ const PrivacyScreen: React.FC = () => {
         <LegalBullet>
           Support/feedback data: feedback text you submit in the app.
         </LegalBullet>
+        <LegalBullet>
+          Moderation data: reports you submit (reason, description) and your block list.
+        </LegalBullet>
       </LegalSection>
 
       <LegalSection heading="How we use data">
@@ -60,6 +63,7 @@ const PrivacyScreen: React.FC = () => {
         <LegalBullet>Deliver direct messages and message notifications.</LegalBullet>
         <LegalBullet>Store your uploaded media and show it in-app.</LegalBullet>
         <LegalBullet>Operate account deletion and security workflows.</LegalBullet>
+        <LegalBullet>Enable user safety through reporting and blocking features.</LegalBullet>
       </LegalSection>
 
       <LegalSection heading="Location details">
@@ -101,6 +105,7 @@ const PrivacyScreen: React.FC = () => {
         <LegalBullet>You can edit profile fields and social links inside the app.</LegalBullet>
         <LegalBullet>You can disable visibility and clear active location presence.</LegalBullet>
         <LegalBullet>You can manage notification preferences in Notification Settings.</LegalBullet>
+        <LegalBullet>You can report users or content and block users from their profile or in messages.</LegalBullet>
         <LegalBullet>
           You can delete your account in-app from the Profile menu under Delete Account, or via the
           public deletion page:

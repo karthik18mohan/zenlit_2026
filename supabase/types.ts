@@ -7,14 +7,47 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "13.0.5"
+    PostgrestVersion: "14.5"
   }
   public: {
     Tables: {
-
+      blocked_users: {
+        Row: {
+          blocked_id: string
+          blocker_id: string
+          created_at: string
+          id: string
+        }
+        Insert: {
+          blocked_id: string
+          blocker_id: string
+          created_at?: string
+          id?: string
+        }
+        Update: {
+          blocked_id?: string
+          blocker_id?: string
+          created_at?: string
+          id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "blocked_users_blocked_id_fkey"
+            columns: ["blocked_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "blocked_users_blocker_id_fkey"
+            columns: ["blocker_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       feedback: {
         Row: {
           created_at: string
@@ -39,9 +72,44 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "feedback_user_id_fkey_profiles"
+            foreignKeyName: "feedback_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      legal_acceptances: {
+        Row: {
+          accepted_at: string
+          created_at: string
+          privacy_version: string
+          terms_version: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          accepted_at: string
+          created_at?: string
+          privacy_version: string
+          terms_version: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          accepted_at?: string
+          created_at?: string
+          privacy_version?: string
+          terms_version?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "legal_acceptances_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
             referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
@@ -84,42 +152,42 @@ export type Database = {
       }
       messages: {
         Row: {
+          created_at: string
           delivered_at: string | null
           id: string
+          read_at: string | null
           receiver_id: string
-          seen_at: string | null
           sender_id: string
-          sent_at: string | null
           text: string
         }
         Insert: {
+          created_at?: string
           delivered_at?: string | null
           id?: string
+          read_at?: string | null
           receiver_id: string
-          seen_at?: string | null
           sender_id: string
-          sent_at?: string | null
           text: string
         }
         Update: {
+          created_at?: string
           delivered_at?: string | null
           id?: string
+          read_at?: string | null
           receiver_id?: string
-          seen_at?: string | null
           sender_id?: string
-          sent_at?: string | null
           text?: string
         }
         Relationships: [
           {
-            foreignKeyName: "messages_receiver_fkey"
+            foreignKeyName: "messages_receiver_id_fkey"
             columns: ["receiver_id"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "messages_sender_fkey"
+            foreignKeyName: "messages_sender_id_fkey"
             columns: ["sender_id"]
             isOneToOne: false
             referencedRelation: "profiles"
@@ -165,32 +233,101 @@ export type Database = {
       profiles: {
         Row: {
           account_created_at: string
+          created_at: string
           date_of_birth: string | null
           display_name: string
           email: string
+          expo_push_token: string | null
           gender: string | null
           id: string
+          last_token_update: string | null
+          notification_enabled: boolean
+          notification_preferences: Json
+          updated_at: string
           user_name: string
         }
         Insert: {
           account_created_at?: string
+          created_at?: string
           date_of_birth?: string | null
           display_name: string
           email: string
+          expo_push_token?: string | null
           gender?: string | null
-          id?: string
+          id: string
+          last_token_update?: string | null
+          notification_enabled?: boolean
+          notification_preferences?: Json
+          updated_at?: string
           user_name: string
         }
         Update: {
           account_created_at?: string
+          created_at?: string
           date_of_birth?: string | null
           display_name?: string
           email?: string
+          expo_push_token?: string | null
           gender?: string | null
           id?: string
+          last_token_update?: string | null
+          notification_enabled?: boolean
+          notification_preferences?: Json
+          updated_at?: string
           user_name?: string
         }
         Relationships: []
+      }
+      reports: {
+        Row: {
+          content_id: string | null
+          content_type: string
+          created_at: string
+          description: string | null
+          id: string
+          reason: string
+          reported_user_id: string
+          reporter_id: string
+          status: string
+        }
+        Insert: {
+          content_id?: string | null
+          content_type: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          reason: string
+          reported_user_id: string
+          reporter_id: string
+          status?: string
+        }
+        Update: {
+          content_id?: string | null
+          content_type?: string
+          created_at?: string
+          description?: string | null
+          id?: string
+          reason?: string
+          reported_user_id?: string
+          reporter_id?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reports_reported_user_id_fkey"
+            columns: ["reported_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reports_reporter_id_fkey"
+            columns: ["reporter_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       social_links: {
         Row: {
@@ -241,34 +378,35 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-        check_email_available: {
-          Args: { email_to_check: string }
-          Returns: boolean
-        }
-        check_username_available: {
-          Args: { username_to_check: string }
-          Returns: boolean
-        }
-        generate_username_suggestions: {
-          Args: { base_username: string; max_suggestions?: number }
-          Returns: string[]
-        }
-        get_unread_counts_direct: {
-          Args: Record<PropertyKey, never>
-          Returns: {
-            peer_id: string
-            unread_count: number
-          }[]
-        }
-        mark_direct_delivered: {
-          Args: { peer_id: string }
-          Returns: undefined
-        }
-        mark_direct_read: {
-          Args: { peer_id: string }
-          Returns: undefined
-        }
+      check_email_available: {
+        Args: { email_to_check: string }
+        Returns: boolean
       }
+      check_username_available: {
+        Args: { username_to_check: string }
+        Returns: boolean
+      }
+      generate_username_suggestions: {
+        Args: { base_username: string; max_suggestions?: number }
+        Returns: string[]
+      }
+      get_blocked_user_ids: { Args: never; Returns: string[] }
+      get_unread_message_counts: {
+        Args: never
+        Returns: {
+          sender_id: string
+          unread_count: number
+        }[]
+      }
+      mark_messages_delivered: {
+        Args: { other_user_id: string }
+        Returns: undefined
+      }
+      mark_messages_read: {
+        Args: { other_user_id: string }
+        Returns: undefined
+      }
+    }
     Enums: {
       [_ in never]: never
     }
@@ -400,4 +538,3 @@ export const Constants = {
     Enums: {},
   },
 } as const
-

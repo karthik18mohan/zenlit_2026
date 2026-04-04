@@ -57,10 +57,21 @@ const TermsScreen: React.FC = () => {
         </LegalParagraph>
       </LegalSection>
 
+      <LegalSection heading="Reporting and blocking">
+        <LegalBullet>
+          You can report users or content that violates these terms. Reports are reviewed by our
+          team and may result in account suspension or content removal.
+        </LegalBullet>
+        <LegalBullet>
+          You can block users to prevent them from contacting you or appearing in your feed and
+          radar.
+        </LegalBullet>
+      </LegalSection>
+
       <LegalSection heading="Enforcement and termination">
         <LegalParagraph>
           We may limit, suspend, or terminate accounts that violate these terms, harm other users,
-          or create legal/security risk.
+          or create legal/security risk, based on user reports or our own review.
         </LegalParagraph>
         <LegalParagraph>
           You may stop using Zenlit at any time and delete your account from the app or at:

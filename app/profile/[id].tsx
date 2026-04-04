@@ -18,7 +18,9 @@ import { Feather } from '@expo/vector-icons';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { MessageSquare } from 'lucide-react-native';
 
+import { Alert } from 'react-native';
 import Post from '../../src/components/Post';
+import ReportSheet from '../../src/components/ReportSheet';
 import {
   SOCIAL_PLATFORMS,
   ensureSocialUrl,
@@ -27,6 +29,7 @@ import {
 import {
   getProfileById,
   getUserPosts,
+  blockUser,
   type Profile,
   type SocialLinks,
   type Post as DbPost,
@@ -81,6 +84,7 @@ const UserProfileScreen: React.FC = () => {
   const [posts, setPosts] = useState<DbPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reportSheetVisible, setReportSheetVisible] = useState(false);
   const hasLoadedRef = useRef(false);
 
   // Responsive spacing units
@@ -270,16 +274,60 @@ const UserProfileScreen: React.FC = () => {
                 </View>
               </Pressable>
 
-              <Pressable
-                onPress={handleMessagePress}
-                style={({ pressed }) => [styles.messageButton, pressed ? { opacity: 0.9 } : null]}
-                accessibilityRole="button"
-                accessibilityLabel="Message user"
-              >
-                <View style={styles.backCircle}>
-                  <MessageSquare size={22} color="#ffffff" strokeWidth={2} />
-                </View>
-              </Pressable>
+              <View style={styles.topRightButtons}>
+                <Pressable
+                  onPress={handleMessagePress}
+                  style={({ pressed }) => [styles.topRightBtn, pressed ? { opacity: 0.9 } : null]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Message user"
+                >
+                  <View style={styles.backCircle}>
+                    <MessageSquare size={22} color="#ffffff" strokeWidth={2} />
+                  </View>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    Alert.alert('Options', undefined, [
+                      { text: 'Report User', onPress: () => setReportSheetVisible(true) },
+                      {
+                        text: 'Block User',
+                        style: 'destructive',
+                        onPress: () => {
+                          Alert.alert(
+                            'Block User',
+                            `Block ${profile.display_name}? They will be hidden from your feed, radar, and messages.`,
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              {
+                                text: 'Block',
+                                style: 'destructive',
+                                onPress: async () => {
+                                  const result = await blockUser(requestedId);
+                                  if (result.success) {
+                                    Alert.alert('Blocked', `${profile.display_name} has been blocked.`, [
+                                      { text: 'OK', onPress: () => router.back() },
+                                    ]);
+                                  } else {
+                                    Alert.alert('Error', result.error || 'Failed to block user.');
+                                  }
+                                },
+                              },
+                            ],
+                          );
+                        },
+                      },
+                      { text: 'Cancel', style: 'cancel' },
+                    ]);
+                  }}
+                  style={({ pressed }) => [styles.topRightBtn, pressed ? { opacity: 0.9 } : null]}
+                  accessibilityRole="button"
+                  accessibilityLabel="More options"
+                >
+                  <View style={styles.backCircle}>
+                    <Feather name="more-vertical" size={22} color="#ffffff" />
+                  </View>
+                </Pressable>
+              </View>
 
               <View style={styles.bannerOverlayRow}>
                 <View style={styles.avatarWrapper}>
@@ -381,7 +429,13 @@ const UserProfileScreen: React.FC = () => {
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
       />
-      {/* Navigation is now rendered in the root layout */}
+
+      <ReportSheet
+        visible={reportSheetVisible}
+        onClose={() => setReportSheetVisible(false)}
+        reportedUserId={requestedId}
+        contentType="profile"
+      />
     </View>
   );
 };
@@ -422,11 +476,14 @@ const styles = StyleSheet.create({
     top: 16,
     left: 16,
   },
-  messageButton: {
+  topRightButtons: {
     position: 'absolute',
     top: 16,
     right: 16,
+    flexDirection: 'row',
+    gap: 8,
   },
+  topRightBtn: {},
   backCircle: {
     width: 44,
     height: 44,
