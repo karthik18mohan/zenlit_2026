@@ -1,0 +1,828 @@
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  AppState,
+  FlatList,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
+
+import ChatHeader from '../../src/components/messaging/ChatHeader';
+import Composer from '../../src/components/messaging/Composer';
+import DayDivider from '../../src/components/messaging/DayDivider';
+import MessageBubble, { type MessageStatus } from '../../src/components/messaging/MessageBubble';
+import TypingIndicator from '../../src/components/messaging/TypingIndicator';
+import { theme } from '../../src/styles/theme';
+import {
+  getMessagesBetweenUsers,
+  sendMessage,
+  type Message,
+  getProfileById,
+  type Profile,
+  type SocialLinks,
+  isUserNearby,
+} from '../../src/services';
+import { supabase } from '../../src/lib/supabase';
+import { useMessaging } from '../../src/contexts/MessagingContext';
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+import { createConversationChannel, type BroadcastMessage, type TypingEvent } from '../../src/utils/realtime';
+import { setupChatRealtime } from '../../src/utils/chatRealtimeSetup';
+import { generateUUID } from '../../src/utils/uuid';
+import { logger } from '../../src/utils/logger';
+
+const FALLBACK_AVATAR = 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_1280.png';
+const BATCH_SIZE = 50;
+
+const formatDayLabel = (isoDate: string): string => {
+  const d = new Date(isoDate);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+};
+
+const isServerMessage = (obj: unknown): obj is Message => {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const o = obj as Partial<Message>;
+  return (
+    typeof o.id === 'string' &&
+    typeof o.sender_id === 'string' &&
+    typeof o.receiver_id === 'string' &&
+    typeof o.text === 'string' &&
+    typeof o.created_at === 'string'
+  );
+};
+
+type ChatMsg = {
+  id: string;
+  text: string;
+  sentAt: string;
+  fromMe: boolean;
+  status: MessageStatus;
+};
+
+type RenderItem =
+  | { type: 'day'; id: string; label: string }
+  | { type: 'message'; id: string; message: ChatMsg };
+
+type MessagesState = {
+  messages: ChatMsg[];
+  hasMore: boolean;
+  isFetchingMore: boolean;
+};
+
+type MessagesAction =
+  | { type: 'SET_MESSAGES'; messages: ChatMsg[]; hasMore: boolean }
+  | { type: 'PREPEND_MESSAGES'; messages: ChatMsg[]; hasMore: boolean }
+  | { type: 'UPSERT_MESSAGE'; message: ChatMsg }
+  | { type: 'UPDATE_MESSAGE'; id: string; updates: Partial<ChatMsg> }
+  | { type: 'SET_FETCHING_MORE'; isFetchingMore: boolean };
+
+function messagesReducer(state: MessagesState, action: MessagesAction): MessagesState {
+  switch (action.type) {
+    case 'SET_MESSAGES':
+      return {
+        ...state,
+        messages: action.messages.sort(
+          (a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime()
+        ),
+        hasMore: action.hasMore,
+      };
+
+    case 'PREPEND_MESSAGES': {
+      const existingIds = new Set(state.messages.map((m) => m.id));
+      const newMessages = action.messages.filter((m) => !existingIds.has(m.id));
+      const combined = [...newMessages, ...state.messages];
+      return {
+        ...state,
+        messages: combined.sort(
+          (a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime()
+        ),
+        hasMore: action.hasMore,
+      };
+    }
+
+    case 'UPSERT_MESSAGE': {
+      const existingIndex = state.messages.findIndex((m) => m.id === action.message.id);
+      let newMessages: ChatMsg[];
+
+      if (existingIndex >= 0) {
+        newMessages = [...state.messages];
+        newMessages[existingIndex] = action.message;
+      } else {
+        newMessages = [...state.messages, action.message];
+      }
+
+      return {
+        ...state,
+        messages: newMessages.sort(
+          (a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime()
+        ),
+      };
+    }
+
+    case 'UPDATE_MESSAGE': {
+      const index = state.messages.findIndex((m) => m.id === action.id);
+      if (index === -1) return state;
+
+      const newMessages = [...state.messages];
+      newMessages[index] = { ...newMessages[index], ...action.updates };
+
+      return { ...state, messages: newMessages };
+    }
+
+    case 'SET_FETCHING_MORE':
+      return { ...state, isFetchingMore: action.isFetchingMore };
+
+    default:
+      return state;
+  }
+}
+
+const sortMessagesAsc = (list: ChatMsg[]) =>
+  [...list].sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
+
+const ChatDetailScreen: React.FC = () => {
+  const params = useLocalSearchParams<{ id?: string }>();
+  const otherUserId =
+    typeof params.id === 'string' ? params.id : Array.isArray(params.id) ? params.id[0] : undefined;
+
+  const { markThreadDelivered, markThreadRead, setActiveConversation } = useMessaging();
+  const [otherUser, setOtherUser] = useState<Profile | null>(null);
+  const [socialLinks, setSocialLinks] = useState<SocialLinks | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [isAnonymous, setIsAnonymous] = useState(false);
+  const [isOnline, setIsOnline] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
+  const [composerHeight, setComposerHeight] = useState(72);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [state, dispatch] = useReducer(messagesReducer, {
+    messages: [],
+    hasMore: true,
+    isFetchingMore: false,
+  });
+
+  const listRef = useRef<FlatList<RenderItem>>(null);
+  const realtimeManagerRef = useRef<ReturnType<typeof createConversationChannel> | null>(null);
+  const eventQueueRef = useRef<Array<() => void>>([]);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scrollYRef = useRef(0);
+  const contentHeightRef = useRef(0);
+  const preAppendHeightRef = useRef(0);
+  const preAppendOffsetRef = useRef(0);
+  const prependingRef = useRef(false);
+  const isAtBottomRef = useRef(true);
+  const lastReadMessageIdRef = useRef<string | null>(null);
+  const hasMarkedReadRef = useRef(false);
+  const initialScrollDoneRef = useRef(false);
+  const hasMountedRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
+
+  const mapServerMessage = useCallback(
+    (msg: Message, userId: string | null = currentUserId): ChatMsg => {
+      if (!userId) {
+        return {
+          id: msg.id,
+          text: msg.text || '',
+          sentAt: msg.created_at,
+          fromMe: false,
+          status: 'sent',
+        };
+      }
+
+      const fromMe = msg.sender_id === userId;
+      let status: MessageStatus = 'sent';
+      if (fromMe) {
+        if (msg.read_at) {
+          status = 'read';
+        } else if (msg.delivered_at) {
+          status = 'delivered';
+        } else {
+          status = 'sent';
+        }
+      }
+
+      return {
+        id: msg.id,
+        text: msg.text || '',
+        sentAt: msg.created_at,
+        fromMe,
+        status,
+      };
+    },
+    [currentUserId]
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!otherUserId) {
+        return () => { };
+      }
+
+      logger.debug('RT:Thread', 'Screen focused');
+      setActiveConversation(otherUserId);
+      hasMarkedReadRef.current = false;
+
+      markThreadDelivered(otherUserId).catch((error) => {
+        logger.error('RT:Thread', 'Failed to mark messages delivered on focus', error);
+      });
+
+      return () => {
+        logger.debug('RT:Thread', 'Screen blurred');
+        setActiveConversation(null);
+        hasMarkedReadRef.current = false;
+      };
+    }, [otherUserId, markThreadDelivered, setActiveConversation])
+  );
+
+  const checkAnonymity = useCallback(async () => {
+    if (!otherUserId) return;
+
+    const { isNearby } = await isUserNearby(otherUserId);
+    setIsAnonymous(!isNearby);
+  }, [otherUserId]);
+
+  const handleTypingChange = useCallback((isUserTyping: boolean) => {
+    if (!currentUserId || !realtimeManagerRef.current) return;
+
+    realtimeManagerRef.current.broadcastTyping(currentUserId, isUserTyping);
+  }, [currentUserId]);
+
+  const handleTypingEvent = useCallback((event: TypingEvent) => {
+    if (event.userId === otherUserId) {
+      setIsTyping(event.isTyping);
+
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+
+      if (event.isTyping) {
+        typingTimeoutRef.current = setTimeout(() => {
+          setIsTyping(false);
+        }, 3000);
+      }
+    }
+  }, [otherUserId]);
+
+  const handlePresenceSync = useCallback((userIds: string[]) => {
+    if (otherUserId) {
+      setIsOnline(userIds.includes(otherUserId));
+    }
+  }, [otherUserId]);
+
+  const processBatchedEvents = useCallback(() => {
+    if (eventQueueRef.current.length === 0) return;
+
+    logger.debug('RT:Thread', `Processing ${eventQueueRef.current.length} batched events`);
+    const events = [...eventQueueRef.current];
+    eventQueueRef.current = [];
+
+    events.forEach((fn) => {
+      try {
+        fn();
+      } catch (error) {
+        logger.error('RT:Thread', 'Error processing queued realtime event', error);
+      }
+    });
+  }, []);
+
+  const queueEvent = useCallback(
+    (fn: () => void) => {
+      eventQueueRef.current.push(fn);
+
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+
+      debounceTimerRef.current = setTimeout(() => {
+        processBatchedEvents();
+      }, 30) as ReturnType<typeof setTimeout>;
+    },
+    [processBatchedEvents]
+  );
+
+  useEffect(() => {
+    const keyboardDidShowListener = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => {
+        setIsKeyboardVisible(true);
+        if (isAtBottomRef.current && hasMountedRef.current) {
+          setTimeout(() => {
+            programmaticScrollRef.current = true;
+            listRef.current?.scrollToEnd({ animated: true });
+            setTimeout(() => {
+              programmaticScrollRef.current = false;
+            }, 300);
+          }, 100);
+        }
+      }
+    );
+
+    const keyboardDidHideListener = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setIsKeyboardVisible(false);
+      }
+    );
+
+    return () => {
+      keyboardDidShowListener.remove();
+      keyboardDidHideListener.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!otherUserId) return;
+
+    initialScrollDoneRef.current = false;
+    hasMountedRef.current = false;
+    hasMarkedReadRef.current = false;
+  }, [otherUserId]);
+
+  // Initial scroll effect removed - Inverted FlatList handles this naturally
+
+  useEffect(() => {
+    if (!otherUserId || !currentUserId) {
+      return;
+    }
+
+    logger.debug('RT:Thread', 'Setting up realtime subscription');
+
+    const manager = setupChatRealtime({
+      currentUserId,
+      otherUserId,
+      handlers: {
+        onMessageInsert: (message) => {
+          queueEvent(() => {
+            const mapped = mapServerMessage(message);
+            dispatch({ type: 'UPSERT_MESSAGE', message: mapped });
+
+            if (message.sender_id === otherUserId && isAtBottomRef.current) {
+              logger.debug('RT:Thread', 'New message from other user, marking as read (user at bottom)');
+              markThreadRead(otherUserId).catch((err) =>
+                logger.error('RT:Thread', 'Failed to mark read', err)
+              );
+              lastReadMessageIdRef.current = message.id;
+              hasMarkedReadRef.current = true;
+            }
+          });
+        },
+        onMessageUpdate: (message) => {
+          queueEvent(() => {
+            const mapped = mapServerMessage(message);
+            dispatch({ type: 'UPSERT_MESSAGE', message: mapped });
+          });
+        },
+        onLocationUpdate: () => {
+          queueEvent(() => {
+            checkAnonymity();
+          });
+        },
+        onPresenceSync: handlePresenceSync,
+        onTypingChange: handleTypingEvent,
+        onBroadcastMessage: (message) => {
+          logger.debug('RT:Thread', 'Received broadcast message', message);
+        },
+      },
+    });
+
+    realtimeManagerRef.current = manager;
+
+    return () => {
+      logger.debug('RT:Thread', 'Cleaning up realtime subscription');
+      manager.unsubscribe();
+      realtimeManagerRef.current = null;
+    };
+  }, [otherUserId, currentUserId, mapServerMessage, checkAnonymity, markThreadRead, queueEvent, handlePresenceSync, handleTypingEvent]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active' && otherUserId && currentUserId) {
+        logger.info('RT:Thread', 'App became active, resubscribing');
+        if (realtimeManagerRef.current && !realtimeManagerRef.current.isActive()) {
+          realtimeManagerRef.current.unsubscribe();
+
+          const manager = createConversationChannel(otherUserId);
+          manager.subscribeToConversation(
+            { currentUserId, otherUserId },
+            {
+              onInsert: (payload: RealtimePostgresChangesPayload<any>) => {
+                const raw = payload.new;
+                if (!isServerMessage(raw)) return;
+
+                queueEvent(() => {
+                  const mapped = mapServerMessage(raw);
+                  dispatch({ type: 'UPSERT_MESSAGE', message: mapped });
+                });
+              },
+              onUpdate: (payload: RealtimePostgresChangesPayload<any>) => {
+                const raw = payload.new;
+                if (!isServerMessage(raw)) return;
+
+                logger.debug('RT:Thread', 'Message status updated');
+                queueEvent(() => {
+                  const mapped = mapServerMessage(raw);
+                  dispatch({ type: 'UPSERT_MESSAGE', message: mapped });
+                });
+              },
+            }
+          );
+
+          manager.subscribeToLocationUpdates({ currentUserId, otherUserId }, () => {
+            queueEvent(() => {
+              checkAnonymity();
+            });
+          });
+
+          realtimeManagerRef.current = manager;
+        }
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [otherUserId, currentUserId, mapServerMessage, checkAnonymity, queueEvent]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadChat = async () => {
+      if (!otherUserId) return;
+
+      setLoading(true);
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user && !cancelled) {
+        setCurrentUserId(user.id);
+      }
+
+      const { profile, socialLinks: social, error: profileError } = await getProfileById(
+        otherUserId
+      );
+
+      if (profileError || !profile) {
+        logger.error('RT:Thread', 'Error loading profile:', profileError);
+      } else {
+        if (!cancelled) {
+          setOtherUser(profile);
+          setSocialLinks(social);
+        }
+      }
+
+      if (user) {
+        const { messages: messagesData, error: messagesError } = await getMessagesBetweenUsers(
+          otherUserId,
+          BATCH_SIZE
+        );
+
+        if (messagesError) {
+          logger.error('RT:Thread', 'Error loading messages:', messagesError);
+        } else {
+          // Use user.id directly instead of currentUserId state to avoid race condition
+          const chatMessages = sortMessagesAsc(
+            messagesData.map((msg) => {
+              return mapServerMessage(msg, user.id);
+            })
+          );
+          if (!cancelled) {
+            dispatch({
+              type: 'SET_MESSAGES',
+              messages: chatMessages,
+              hasMore: messagesData.length === BATCH_SIZE,
+            });
+          }
+        }
+      }
+
+      await checkAnonymity();
+
+      if (!cancelled) {
+        setLoading(false);
+      }
+    };
+
+    void loadChat();
+    return () => {
+      cancelled = true;
+    };
+  }, [otherUserId, checkAnonymity, mapServerMessage]);
+
+  const loadOlder = useCallback(async () => {
+    if (state.isFetchingMore || !state.hasMore || !otherUserId || state.messages.length === 0)
+      return;
+
+    const oldest = state.messages[0]?.sentAt;
+    if (!oldest) return;
+
+    logger.debug('RT:Thread', 'Loading older messages');
+    dispatch({ type: 'SET_FETCHING_MORE', isFetchingMore: true });
+    // prependingRef logic removed as inverted list handles this natively
+
+    try {
+      const { messages: olderData, error } = await getMessagesBetweenUsers(
+        otherUserId,
+        BATCH_SIZE,
+        oldest
+      );
+
+      if (error) {
+        logger.error('RT:Thread', 'Error loading older messages:', error);
+      } else if (olderData.length > 0) {
+        const olderAsc = sortMessagesAsc(olderData.map((message) => mapServerMessage(message)));
+        dispatch({
+          type: 'PREPEND_MESSAGES',
+          messages: olderAsc,
+          hasMore: olderData.length === BATCH_SIZE,
+        });
+      }
+    } finally {
+      dispatch({ type: 'SET_FETCHING_MORE', isFetchingMore: false });
+    }
+  }, [state.isFetchingMore, state.hasMore, state.messages, otherUserId, mapServerMessage]);
+
+  const data = useMemo<RenderItem[]>(() => {
+    const entries: RenderItem[] = [];
+    // Sort descending for inverted list (Newest first)
+    const reversedMessages = [...state.messages].sort(
+      (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
+    );
+
+    reversedMessages.forEach((message, index) => {
+      // Add message
+      entries.push({ type: 'message', id: message.id, message });
+
+      // Check if we need a day divider after this message (visually above)
+      const label = formatDayLabel(message.sentAt);
+      const nextMessage = reversedMessages[index + 1];
+      const nextLabel = nextMessage ? formatDayLabel(nextMessage.sentAt) : null;
+
+      if (label !== nextLabel) {
+        entries.push({ type: 'day', id: `day-${label}-${message.id}`, label });
+      }
+    });
+    return entries;
+  }, [state.messages]);
+
+  const handleSend = async (text: string) => {
+    if (!otherUserId) {
+      return;
+    }
+
+    const body = text.trim();
+    if (!body) {
+      return;
+    }
+
+    const messageId = generateUUID();
+    const nowIso = new Date().toISOString();
+    const optimisticMessage: ChatMsg = {
+      id: messageId,
+      text: body,
+      sentAt: nowIso,
+      fromMe: true,
+      status: 'pending',
+    };
+
+    dispatch({ type: 'UPSERT_MESSAGE', message: optimisticMessage });
+
+    isAtBottomRef.current = true;
+    // Scroll to bottom (offset 0 in inverted list)
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+
+    try {
+      const { message, error } = await sendMessage(otherUserId, body, messageId);
+      if (error || !message) {
+        throw error ?? new Error('Message failed to send');
+      }
+
+      dispatch({
+        type: 'UPSERT_MESSAGE',
+        message: mapServerMessage(message),
+      });
+    } catch (err) {
+      logger.error('RT:Thread', 'Error sending message:', err);
+      dispatch({
+        type: 'UPDATE_MESSAGE',
+        id: messageId,
+        updates: { status: 'failed' },
+      });
+    }
+  };
+
+  const handleRetry = useCallback(
+    async (message: ChatMsg) => {
+      if (!otherUserId) {
+        return;
+      }
+
+      const retryTimestamp = new Date().toISOString();
+      dispatch({
+        type: 'UPDATE_MESSAGE',
+        id: message.id,
+        updates: { status: 'pending', sentAt: retryTimestamp },
+      });
+
+      try {
+        const retryId = generateUUID();
+        const { message: sentMessage, error } = await sendMessage(otherUserId, message.text, retryId);
+        if (error || !sentMessage) {
+          throw error ?? new Error('Retry failed');
+        }
+
+        dispatch({
+          type: 'UPSERT_MESSAGE',
+          message: mapServerMessage(sentMessage),
+        });
+      } catch (err) {
+        logger.error('RT:Thread', 'Error retrying message send:', err);
+        dispatch({
+          type: 'UPDATE_MESSAGE',
+          id: message.id,
+          updates: { status: 'failed' },
+        });
+      }
+    },
+    [otherUserId, mapServerMessage]
+  );
+
+  if (loading) {
+    return (
+      <View style={styles.missingRoot}>
+        <StatusBar barStyle="light-content" backgroundColor={theme.colors.background} />
+        <SafeAreaView style={styles.safeArea} edges={['top']}>
+          <ChatHeader title="Loading..." />
+        </SafeAreaView>
+        <View style={styles.missingContent}>
+          <Text style={styles.missingText}>Loading conversation...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (!otherUser) {
+    return (
+      <View style={styles.missingRoot}>
+        <StatusBar barStyle="light-content" backgroundColor={theme.colors.background} />
+        <SafeAreaView style={styles.safeArea} edges={['top']}>
+          <ChatHeader title="Message" />
+        </SafeAreaView>
+        <View style={styles.missingContent}>
+          <Text style={styles.missingText}>User not found.</Text>
+        </View>
+      </View>
+    );
+  }
+
+  const displayName = isAnonymous ? 'Anonymous' : otherUser.display_name;
+  const displayAvatar = isAnonymous
+    ? undefined
+    : socialLinks?.profile_pic_url || FALLBACK_AVATAR;
+
+  return (
+    <View style={styles.root}>
+      <StatusBar barStyle="light-content" backgroundColor={theme.colors.background} />
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
+        <ChatHeader
+          title={displayName}
+          avatarUrl={displayAvatar}
+          isAnonymous={isAnonymous}
+          profileId={otherUser.id}
+          isOnline={isOnline}
+          isTyping={isTyping}
+        />
+      </SafeAreaView>
+
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.select({ ios: 'padding', android: 'height' })}
+        keyboardVerticalOffset={Platform.select({ ios: 18, android: 0 }) ?? 0}
+      >
+        <View style={styles.messagesArea}>
+          <FlatList
+            ref={listRef}
+            data={data}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => {
+              if (item.type === 'day') {
+                return <DayDivider label={item.label} />;
+              }
+              return (
+                <MessageBubble
+                  text={item.message.text}
+                  createdAt={item.message.sentAt}
+                  isMine={item.message.fromMe}
+                  status={item.message.status}
+                  onRetry={
+                    item.message.status === 'failed' ? () => handleRetry(item.message) : undefined
+                  }
+                />
+              );
+            }}
+            inverted
+            contentContainerStyle={[
+              styles.listContent,
+              { paddingBottom: 16, paddingTop: 16 }
+            ]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            onEndReached={loadOlder}
+            onEndReachedThreshold={0.2}
+            onScroll={(e) => {
+              const y = e.nativeEvent.contentOffset.y;
+              scrollYRef.current = y;
+
+              // In inverted list, y=0 is the bottom
+              const isAtBottom = y < 20;
+              isAtBottomRef.current = isAtBottom;
+
+              if (isAtBottom && !hasMarkedReadRef.current && otherUserId) {
+                logger.debug('RT:Thread', 'User scrolled to bottom, marking messages as read');
+                markThreadRead(otherUserId).catch((err) =>
+                  logger.error('RT:Thread', 'Failed to mark read on scroll', err)
+                );
+                hasMarkedReadRef.current = true;
+              }
+            }}
+            scrollEventThrottle={16}
+            ListHeaderComponent={
+              isTyping && !isAnonymous && otherUser ? (
+                <TypingIndicator displayName={displayName} />
+              ) : null
+            }
+            ListFooterComponent={
+              state.isFetchingMore ? (
+                <View style={{ paddingVertical: 8, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={theme.colors.muted} />
+                </View>
+              ) : null
+            }
+          />
+          <SafeAreaView
+            edges={['bottom']}
+            style={styles.composerWrapper}
+            onLayout={(e) => {
+              const height = e.nativeEvent.layout.height;
+              if (height > 0 && Math.abs(height - composerHeight) > 2) {
+                setComposerHeight(height);
+              }
+            }}
+          >
+            <Composer onSend={handleSend} disabled={isAnonymous} onTypingChange={handleTypingChange} />
+          </SafeAreaView>
+        </View>
+      </KeyboardAvoidingView>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+  missingRoot: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+  safeArea: {
+    backgroundColor: '#000000',
+  },
+  missingContent: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  missingText: {
+    color: theme.colors.muted,
+    fontSize: 16,
+  },
+  flex: {
+    flex: 1,
+  },
+  messagesArea: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+  listContent: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  composerWrapper: {
+    backgroundColor: '#000000',
+    borderTopWidth: 0,
+  },
+});
+
+export default ChatDetailScreen;

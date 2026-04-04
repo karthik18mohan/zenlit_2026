@@ -1,0 +1,364 @@
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import type { PropsWithChildren } from 'react';
+
+import type { SocialPlatformId } from '../constants/socialPlatforms';
+import { DEFAULT_VISIBLE_PLATFORMS } from '../constants/socialPlatforms';
+import { updateUserLocation, deleteUserLocation } from '../services';
+import {
+  checkLocationPermissionWithMeta,
+  getCurrentLocation,
+  watchLocation,
+  requestLocationPermissionWithMeta,
+  type LocationError,
+} from '../services/locationService';
+
+const LOCATION_REFRESH_INTERVAL = 60000;
+const LOCATION_HEARTBEAT_INTERVAL = 60000;
+
+const getErrorName = (code: number): string => {
+  switch (code) {
+    case 1:
+      return 'PERMISSION_DENIED';
+    case 2:
+      return 'POSITION_UNAVAILABLE';
+    case 3:
+      return 'TIMEOUT';
+    default:
+      return 'UNKNOWN';
+  }
+};
+
+export type LocationStatus =
+  | 'not-attempted'
+  | 'fetching'
+  | 'success'
+  | 'timeout'
+  | 'position-unavailable'
+  | 'permission-denied'
+  | 'permission-blocked'
+  | 'services-disabled';
+
+type LocationPermissionRequestOptions = {
+  autoEnable?: boolean;
+};
+
+type VisibilityContextValue = {
+  isVisible: boolean;
+  setIsVisible: (value: boolean, source?: 'user' | 'auto') => void;
+  radiusKm: number;
+  setRadiusKm: (value: number) => void;
+  selectedAccounts: SocialPlatformId[];
+  toggleAccount: (platformId: SocialPlatformId) => void;
+  selectAll: () => void;
+  deselectAll: () => void;
+  locationPermissionDenied: boolean;
+  locationStatus: LocationStatus;
+  requestLocationPermission: (options?: LocationPermissionRequestOptions) => Promise<boolean>;
+  refreshLocationPermissionState: () => Promise<void>;
+};
+
+const VisibilityContext = createContext<VisibilityContextValue | undefined>(undefined);
+
+export const useVisibility = () => {
+  const context = useContext(VisibilityContext);
+  if (!context) {
+    throw new Error('useVisibility must be used within a VisibilityProvider');
+  }
+  return context;
+};
+
+export const VisibilityProvider: React.FC<PropsWithChildren> = ({ children }) => {
+  const [isVisible, setIsVisibleState] = useState(false);
+  const [radiusKm, setRadiusKm] = useState(5);
+  const [selectedAccounts, setSelectedAccounts] = useState<SocialPlatformId[]>(
+    [...DEFAULT_VISIBLE_PLATFORMS],
+  );
+  const [locationPermissionDenied, setLocationPermissionDenied] = useState(false);
+  const [locationStatus, setLocationStatus] = useState<LocationStatus>('not-attempted');
+  const locationWatchRef = useRef<(() => void) | null>(null);
+  const locationHeartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const userForcedInvisibleRef = useRef(false);
+  const lastCoordsRef = useRef<{ latitude: number; longitude: number } | null>(null);
+
+  const stopLocationRefresh = useCallback(() => {
+    if (locationWatchRef.current) {
+      locationWatchRef.current();
+      locationWatchRef.current = null;
+    }
+
+    if (locationHeartbeatRef.current) {
+      clearInterval(locationHeartbeatRef.current);
+      locationHeartbeatRef.current = null;
+    }
+  }, []);
+
+  const startLocationRefresh = useCallback(() => {
+    stopLocationRefresh();
+
+    locationWatchRef.current = watchLocation(
+      async (coords) => {
+        await updateUserLocation(coords.latitude, coords.longitude);
+        lastCoordsRef.current = { latitude: coords.latitude, longitude: coords.longitude };
+        setLocationStatus('success');
+      },
+      async (error: LocationError) => {
+        console.warn(`Geolocation refresh error (${getErrorName(error.code)}):`, error);
+        if (error.code === 1) {
+          setLocationPermissionDenied(true);
+          setLocationStatus('permission-denied');
+          await deleteUserLocation();
+          if (locationWatchRef.current) {
+            locationWatchRef.current();
+            locationWatchRef.current = null;
+          }
+        } else if (error.code === 2) {
+          console.warn('Position unavailable - will retry on next interval');
+          setLocationStatus('position-unavailable');
+          if (lastCoordsRef.current) {
+            await updateUserLocation(lastCoordsRef.current.latitude, lastCoordsRef.current.longitude);
+          }
+        } else if (error.code === 3) {
+          console.warn('Location timeout - will retry on next interval');
+          setLocationStatus('timeout');
+          if (lastCoordsRef.current) {
+            await updateUserLocation(lastCoordsRef.current.latitude, lastCoordsRef.current.longitude);
+          }
+        }
+      },
+      LOCATION_REFRESH_INTERVAL
+    );
+    locationHeartbeatRef.current = setInterval(() => {
+      if (!lastCoordsRef.current) {
+        return;
+      }
+      updateUserLocation(lastCoordsRef.current.latitude, lastCoordsRef.current.longitude).catch(
+        (err) => console.warn('Location heartbeat failed:', err)
+      );
+    }, LOCATION_HEARTBEAT_INTERVAL);
+  }, [stopLocationRefresh]);
+
+  const setIsVisible = useCallback(
+    (value: boolean, source: 'user' | 'auto' = 'user') => {
+      if (source === 'auto' && value && userForcedInvisibleRef.current) {
+        return;
+      }
+
+      setIsVisibleState((prev) => (prev === value ? prev : value));
+
+      if (source === 'user') {
+        userForcedInvisibleRef.current = !value;
+      }
+    },
+    [],
+  );
+
+  const refreshLocationPermissionState = useCallback(async () => {
+    try {
+      const snapshot = await checkLocationPermissionWithMeta();
+
+      if (!snapshot.servicesEnabled) {
+        setLocationPermissionDenied(true);
+        setLocationStatus('services-disabled');
+        return;
+      }
+
+      if (snapshot.status === 'granted') {
+        setLocationPermissionDenied(false);
+        if (!isVisible) {
+          setLocationStatus('not-attempted');
+        }
+        return;
+      }
+
+      if (snapshot.status === 'denied') {
+        setLocationPermissionDenied(true);
+        setLocationStatus(snapshot.canAskAgain ? 'permission-denied' : 'permission-blocked');
+        return;
+      }
+
+      setLocationPermissionDenied(false);
+      if (!isVisible) {
+        setLocationStatus('not-attempted');
+      }
+    } catch (error) {
+      console.error('Failed to refresh location permission state:', error);
+    }
+  }, [isVisible]);
+
+  const handleLocationUpdate = useCallback(async () => {
+    if (isVisible) {
+      setLocationStatus('fetching');
+      try {
+        const coords = await getCurrentLocation();
+        await updateUserLocation(coords.latitude, coords.longitude);
+        lastCoordsRef.current = { latitude: coords.latitude, longitude: coords.longitude };
+        setLocationPermissionDenied(false);
+        setLocationStatus('success');
+        startLocationRefresh();
+      } catch (error: any) {
+        console.warn(`Geolocation error (${getErrorName(error.code)}):`, error);
+        if (error.code === 1) {
+          setLocationPermissionDenied(true);
+          setLocationStatus('permission-denied');
+          await deleteUserLocation();
+          stopLocationRefresh();
+        } else if (error.code === 2) {
+          console.warn('Initial position unavailable - starting location watch anyway');
+          setLocationStatus('position-unavailable');
+          startLocationRefresh();
+        } else if (error.code === 3) {
+          console.warn('Initial location timeout - starting location watch anyway');
+          setLocationStatus('timeout');
+          startLocationRefresh();
+        }
+      }
+    } else {
+      await deleteUserLocation();
+      setLocationPermissionDenied(false);
+      setLocationStatus('not-attempted');
+      stopLocationRefresh();
+    }
+  }, [isVisible, startLocationRefresh, stopLocationRefresh]);
+
+  useEffect(() => {
+    handleLocationUpdate();
+
+    return () => {
+      if (locationWatchRef.current) {
+        locationWatchRef.current();
+        locationWatchRef.current = null;
+      }
+    };
+  }, [handleLocationUpdate]);
+
+  useEffect(() => {
+    refreshLocationPermissionState();
+  }, [refreshLocationPermissionState]);
+
+  const toggleAccount = (platformId: SocialPlatformId) => {
+    setSelectedAccounts((prev) =>
+      prev.includes(platformId)
+        ? prev.filter((id) => id !== platformId)
+        : [...prev, platformId],
+    );
+  };
+
+  const selectAll = () => {
+    setSelectedAccounts([...DEFAULT_VISIBLE_PLATFORMS]);
+  };
+
+  const deselectAll = () => {
+    setSelectedAccounts([]);
+  };
+
+  const requestLocationPermission = useCallback(async (
+    options: LocationPermissionRequestOptions = {},
+  ): Promise<boolean> => {
+    const { autoEnable = true } = options;
+
+    try {
+      const current = await checkLocationPermissionWithMeta();
+
+      if (!current.servicesEnabled) {
+        setLocationPermissionDenied(true);
+        setLocationStatus('services-disabled');
+        setIsVisible(false, 'auto');
+        return false;
+      }
+
+      const permission = current.status === 'undetermined'
+        ? await requestLocationPermissionWithMeta()
+        : current;
+
+      if (!permission.servicesEnabled) {
+        setLocationPermissionDenied(true);
+        setLocationStatus('services-disabled');
+        setIsVisible(false, 'auto');
+        return false;
+      }
+
+      if (permission.status === 'granted') {
+        setLocationStatus('fetching');
+        try {
+          const coords = await getCurrentLocation();
+          await updateUserLocation(coords.latitude, coords.longitude);
+          setLocationPermissionDenied(false);
+          setLocationStatus('success');
+          if (autoEnable) {
+            setIsVisible(true, 'auto');
+          }
+          startLocationRefresh();
+          return true;
+        } catch (error: any) {
+          console.warn(`Location request error (${getErrorName(error.code)}):`, error);
+          if (error.code === 1) {
+            setLocationPermissionDenied(true);
+            setLocationStatus('permission-denied');
+            await deleteUserLocation();
+            setIsVisible(false, 'auto');
+            return false;
+          }
+          if (error.code === 2) {
+            console.warn('Initial position unavailable on permission request - will start watch anyway');
+            setLocationStatus('position-unavailable');
+            if (autoEnable) {
+              setIsVisible(true, 'auto');
+            }
+            startLocationRefresh();
+            return true;
+          }
+          if (error.code === 3) {
+            console.warn('Initial location timeout on permission request - will start watch anyway');
+            setLocationStatus('timeout');
+            if (autoEnable) {
+              setIsVisible(true, 'auto');
+            }
+            startLocationRefresh();
+            return true;
+          }
+          return false;
+        }
+      }
+
+      setLocationPermissionDenied(true);
+      setLocationStatus(permission.canAskAgain ? 'permission-denied' : 'permission-blocked');
+      await deleteUserLocation();
+      setIsVisible(false, 'auto');
+      return false;
+    } catch (error) {
+      console.error('Failed to request location permission:', error);
+      setLocationPermissionDenied(true);
+      setLocationStatus('permission-denied');
+      return false;
+    }
+  }, [setIsVisible, startLocationRefresh]);
+
+  const value = useMemo(
+    () => ({
+      isVisible,
+      setIsVisible,
+      radiusKm,
+      setRadiusKm,
+      selectedAccounts,
+      toggleAccount,
+      selectAll,
+      deselectAll,
+      locationPermissionDenied,
+      locationStatus,
+      requestLocationPermission,
+      refreshLocationPermissionState,
+    }),
+    [
+      isVisible,
+      radiusKm,
+      selectedAccounts,
+      locationPermissionDenied,
+      locationStatus,
+      setIsVisible,
+      requestLocationPermission,
+      refreshLocationPermissionState,
+    ],
+  );
+
+  return <VisibilityContext.Provider value={value}>{children}</VisibilityContext.Provider>;
+};

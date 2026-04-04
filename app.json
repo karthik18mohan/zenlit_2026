@@ -1,0 +1,91 @@
+{
+  "expo": {
+    "name": "zenlit",
+    "slug": "zenlit",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "scheme": "zenlit",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "zenlit"
+            ]
+          }
+        ]
+      },
+      "bundleIdentifier": "com.arjungowdal4601.zenlit"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.arjungowdal4601.zenlit",
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES"
+      ]
+    },
+    "notification": {
+      "icon": "./assets/icon.png",
+      "color": "#60a5fa",
+      "androidMode": "default",
+      "androidCollapsedTitle": "{{unread_count}} new notifications"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-font",
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Zenlit uses your location while you use Radar to show nearby people."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#60a5fa"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Zenlit needs access to your photos so you can set a profile picture or share images.",
+          "cameraPermission": "Zenlit needs access to your camera so you can take a profile photo."
+        }
+      ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "0a650645-9cc0-410e-a147-f5409c7c8432"
+      },
+      "webBaseUrl": "https://zenlit.app",
+      "supportEmail": "support@zenlit.app",
+      "privacyPolicyUrl": "https://zenlit.app/privacy",
+      "termsUrl": "https://zenlit.app/terms",
+      "accountDeletionUrl": "https://zenlit.app/delete-account"
+    },
+    "owner": "arjungowdal4601"
+  }
+}

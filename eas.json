@@ -1,0 +1,45 @@
+{
+  "cli": {
+    "version": ">= 16.24.1",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_REDIRECT_SCHEME": "zenlit",
+        "EXPO_PUBLIC_WEB_BASE_URL": "https://zenlit.app",
+        "EXPO_PUBLIC_PRIVACY_POLICY_URL": "https://zenlit.app/privacy",
+        "EXPO_PUBLIC_TERMS_URL": "https://zenlit.app/terms",
+        "EXPO_PUBLIC_ACCOUNT_DELETION_URL": "https://zenlit.app/delete-account",
+        "EXPO_PUBLIC_SUPPORT_EMAIL": "support@zenlit.app"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_REDIRECT_SCHEME": "zenlit",
+        "EXPO_PUBLIC_WEB_BASE_URL": "https://zenlit.app",
+        "EXPO_PUBLIC_PRIVACY_POLICY_URL": "https://zenlit.app/privacy",
+        "EXPO_PUBLIC_TERMS_URL": "https://zenlit.app/terms",
+        "EXPO_PUBLIC_ACCOUNT_DELETION_URL": "https://zenlit.app/delete-account",
+        "EXPO_PUBLIC_SUPPORT_EMAIL": "support@zenlit.app"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_REDIRECT_SCHEME": "zenlit",
+        "EXPO_PUBLIC_WEB_BASE_URL": "https://zenlit.app",
+        "EXPO_PUBLIC_PRIVACY_POLICY_URL": "https://zenlit.app/privacy",
+        "EXPO_PUBLIC_TERMS_URL": "https://zenlit.app/terms",
+        "EXPO_PUBLIC_ACCOUNT_DELETION_URL": "https://zenlit.app/delete-account",
+        "EXPO_PUBLIC_SUPPORT_EMAIL": "support@zenlit.app"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
