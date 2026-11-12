@@ -1,0 +1,53 @@
+name: xtool iOS build
+
+on:
+  push:
+    branches:
+      - claude/great-dirac-grs6lw
+    paths:
+      - xtool-app/**
+      - .github/workflows/xtool-ios.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: xtool-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          newest=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          sudo xcode-select -s "$newest/Contents/Developer"
+          xcodebuild -version
+          swift --version
+          xcrun -sdk iphoneos -show-sdk-path
+
+      - name: Install xtool
+        run: |
+          brew install xtool-org/tap/xtool
+          xtool --version
+
+      - name: Build IPA with xtool
+        run: xtool dev build --configuration release --ipa
+
+      - name: Inspect IPA
+        run: |
+          ls -la xtool
+          unzip -l xtool/*.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZenlitBreathe-unsigned
+          path: xtool-app/xtool/*.ipa
+          if-no-files-found: error
