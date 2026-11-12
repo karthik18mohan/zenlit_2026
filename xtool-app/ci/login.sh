@@ -11,6 +11,11 @@ code_file="xtool-app/ci/2fa-code.txt"
 log="$RUNNER_TEMP/xtool-login.log"
 fifo="$RUNNER_TEMP/xtool-login.in"
 
+# Secrets pasted on a phone often pick up a stray space or newline.
+trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+APPLE_ID="$(trim "$APPLE_ID")"
+APPLE_PASSWORD="$(trim "$APPLE_PASSWORD")"
+
 mkfifo "$fifo"
 exec 3<>"$fifo"
 
