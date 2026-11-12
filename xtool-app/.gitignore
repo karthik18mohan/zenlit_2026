@@ -3,4 +3,4 @@
 /Packages
 /xtool
 .swiftpm/
-*.ipa
+/xtool/
