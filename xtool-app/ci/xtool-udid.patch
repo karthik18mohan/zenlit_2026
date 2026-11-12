@@ -1,3 +1,19 @@
+diff --git a/Sources/XKit/Signer/SigningContext.swift b/Sources/XKit/Signer/SigningContext.swift
+index 4400ecc..b33bc52 100644
+--- a/Sources/XKit/Signer/SigningContext.swift
++++ b/Sources/XKit/Signer/SigningContext.swift
+@@ -14,6 +14,11 @@ public struct SigningContext: Sendable {
+     public struct TargetDevice: Sendable, Hashable {
+         public var udid: String
+         public var name: String
++
++        public init(udid: String, name: String) {
++            self.udid = udid
++            self.name = name
++        }
+     }
+ 
+     public var auth: DeveloperAPIAuthData
 diff --git a/Sources/XToolSupport/DevCommand.swift b/Sources/XToolSupport/DevCommand.swift
 index 12852b9..9c89cde 100644
 --- a/Sources/XToolSupport/DevCommand.swift
@@ -35,3 +51,35 @@ index 12852b9..9c89cde 100644
              } catch let error as CancellationError {
                  throw error
              } catch {
+diff --git a/Sources/XToolSupport/XTool.swift b/Sources/XToolSupport/XTool.swift
+index 4b4cbeb..497b427 100644
+--- a/Sources/XToolSupport/XTool.swift
++++ b/Sources/XToolSupport/XTool.swift
+@@ -59,13 +59,21 @@ extension ParsableCommand where Self: SendableMetatype {
+             guard !Task.isCancelled else { return }
+             do {
+                 @Dependency(\.shutdownRegistry) var shutdownRegistry
+-                defer { await shutdownRegistry.shutdown() }
+-                var command = try self.parseAsRoot(arguments)
+-                if var asyncCommand = command as? AsyncParsableCommand {
+-                    try await asyncCommand.run()
+-                } else {
+-                    try command.run()
++                // (async defer needs Swift 6.4; spelled out for older toolchains)
++                let result: Result<Void, any Error>
++                do {
++                    var command = try self.parseAsRoot(arguments)
++                    if var asyncCommand = command as? AsyncParsableCommand {
++                        try await asyncCommand.run()
++                    } else {
++                        try command.run()
++                    }
++                    result = .success(())
++                } catch {
++                    result = .failure(error)
+                 }
++                await shutdownRegistry.shutdown()
++                try result.get()
+             } catch where error is CancellationError || Task.isCancelled {
+                 d.out.print("Cancelled.", stream: .stderr)
+                 self.exit()
