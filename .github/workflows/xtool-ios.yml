@@ -7,13 +7,30 @@ on:
     paths:
       - xtool-app/**
       - .github/workflows/xtool-ios.yml
+      - "!xtool-app/ci/2fa-code.txt"
+      - "!xtool-app/dist/**"
   workflow_dispatch:
+    inputs:
+      udid:
+        description: UDID of the iPhone to sign for (leave empty to only prepare the signing tool)
+        required: false
+        default: ""
+      device_name:
+        description: Name to register the device under
+        required: false
+        default: iPhone
 
 permissions:
   contents: read
 
+env:
+  # xtool revision that xtool-app/ci/xtool-udid.patch applies to
+  XTOOL_REF: a2875dd
+
 jobs:
   build:
+    name: Build unsigned IPA
+    if: github.event_name == 'push'
     runs-on: macos-latest
     timeout-minutes: 30
     defaults:
@@ -25,12 +42,9 @@ jobs:
 
       - name: Select newest Xcode
         run: |
-          ls -d /Applications/Xcode*.app
           newest=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
           sudo xcode-select -s "$newest/Contents/Developer"
           xcodebuild -version
-          swift --version
-          xcrun -sdk iphoneos -show-sdk-path
 
       - name: Install xtool
         run: |
@@ -40,14 +54,102 @@ jobs:
       - name: Build IPA with xtool
         run: xtool dev build --configuration release --ipa
 
-      - name: Inspect IPA
-        run: |
-          ls -la xtool
-          unzip -l xtool/*.ipa
-
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
           name: ZenlitBreathe-unsigned
           path: xtool-app/xtool/*.ipa
           if-no-files-found: error
+
+  sign:
+    name: Build and sign IPA for a device
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        id: xcode
+        run: |
+          newest=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          sudo xcode-select -s "$newest/Contents/Developer"
+          xcodebuild -version
+          echo "version=$(basename "$newest")" >> "$GITHUB_OUTPUT"
+
+      # Stock xtool only provisions for a device that is plugged in. The patch
+      # adds `xtool dev build --udid`, which registers a device by UDID instead.
+      - name: Restore patched xtool
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/xtool-patched
+          key: xtool-${{ env.XTOOL_REF }}-${{ hashFiles('xtool-app/ci/xtool-udid.patch') }}-${{ steps.xcode.outputs.version }}
+
+      - name: Build patched xtool
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/xtool-org/xtool "$RUNNER_TEMP/xtool-src"
+          cd "$RUNNER_TEMP/xtool-src"
+          git checkout "$XTOOL_REF"
+          git apply "$GITHUB_WORKSPACE/xtool-app/ci/xtool-udid.patch"
+          swift build --product xtool -c release
+          mkdir -p ~/xtool-patched
+          bin=$(swift build --product xtool -c release --show-bin-path)
+          cp "$bin/xtool" ~/xtool-patched/
+          find "$bin" -maxdepth 1 \( -name '*.bundle' -o -name '*.dylib' -o -name '*.framework' \) -exec cp -R {} ~/xtool-patched/ \;
+          ls -la ~/xtool-patched
+
+      - name: Check patched xtool
+        run: |
+          ~/xtool-patched/xtool --version
+          ~/xtool-patched/xtool dev build --help
+
+      - name: Log in to Apple Developer Services
+        if: inputs.udid != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ]; then
+            echo "::error::Add the APPLE_ID and APPLE_PASSWORD repository secrets first"
+            exit 1
+          fi
+          xtool-app/ci/login.sh ~/xtool-patched/xtool
+
+      - name: Build and sign IPA with xtool
+        if: inputs.udid != ''
+        working-directory: xtool-app
+        env:
+          UDID: ${{ inputs.udid }}
+          DEVICE_NAME: ${{ inputs.device_name }}
+        run: |
+          ~/xtool-patched/xtool dev build --configuration release --sign --ipa \
+            --udid "$UDID" --device-name "$DEVICE_NAME" < <(yes yes)
+
+      - name: Verify signature
+        if: inputs.udid != ''
+        working-directory: xtool-app
+        env:
+          UDID: ${{ inputs.udid }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/verify"
+          unzip -q xtool/ZenlitBreathe.ipa -d "$RUNNER_TEMP/verify"
+          app=$(ls -d "$RUNNER_TEMP"/verify/Payload/*.app)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | grep -E 'Identifier|TeamIdentifier|Authority' || true
+          security cms -D -i "$app/embedded.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          /usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$RUNNER_TEMP/profile.plist"
+          /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$RUNNER_TEMP/profile.plist" | grep -q "$UDID"
+          echo "Profile includes the target device."
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist"
+
+      - name: Upload signed IPA
+        if: inputs.udid != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZenlitBreathe-signed
+          path: xtool-app/xtool/ZenlitBreathe.ipa
+          if-no-files-found: error
+          retention-days: 1

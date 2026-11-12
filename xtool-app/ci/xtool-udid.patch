@@ -1,0 +1,37 @@
+diff --git a/Sources/XToolSupport/DevCommand.swift b/Sources/XToolSupport/DevCommand.swift
+index 12852b9..9c89cde 100644
+--- a/Sources/XToolSupport/DevCommand.swift
++++ b/Sources/XToolSupport/DevCommand.swift
+@@ -144,6 +144,20 @@ struct DevBuildCommand: AsyncParsableCommand {
+         )
+     ) var triple: String?
+ 
++    @Option(
++        help: ArgumentHelp(
++            "UDID of a device to register and provision for when signing",
++            discussion: """
++            Lets you sign for a device that isn't connected to this machine, \
++            e.g. to distribute the resulting ipa over the air.
++            """
++        )
++    ) var udid: String?
++
++    @Option(
++        help: "Name to register the --udid device under"
++    ) var deviceName: String = "iPhone"
++
+     func run() async throws {
+         let signingAuthToken: AuthToken?
+         if sign {
+@@ -168,7 +182,10 @@ struct DevBuildCommand: AsyncParsableCommand {
+             )
+             do {
+                 defer { d.out.print() }
+-                try await installer.signInPlace(app: url)
++                try await installer.signInPlace(
++                    app: url,
++                    targetDevice: udid.map { .init(udid: $0, name: deviceName) }
++                )
+             } catch let error as CancellationError {
+                 throw error
+             } catch {
